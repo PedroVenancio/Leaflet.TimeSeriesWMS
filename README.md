@@ -54,20 +54,20 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 L.control.timeserieswms({
     position: 'bottomleft',
     wmsUrls: [
-        'https://adaguc.lsasvcs.ipma.pt/adagucserver?dataset=MTG-FRP',
-        'https://view.eumetsat.int/geoserver/mtg_fd/rgb_firetemperature/ows'
+        'https://view.eumetsat.int/geoserver/mtg_fd/rgb_firetemperature/ows',
+        'https://adaguc.lsasvcs.ipma.pt/adagucserver?dataset=MTG-FRP'
     ],
-    wmsLayers: ['FRP', 'rgb_firetemperature'],
+    wmsLayers: ['rgb_firetemperature','FRP'],
     wmsParams: [
         {
             version: '1.3.0',
-            format: 'image/jpeg',
+            format: 'image/png',
             transparent: true,
             crs: L.CRS.EPSG4326
         },
         {
             version: '1.3.0',
-            format: 'image/png',
+            format: 'image/jpeg',
             transparent: true,
             crs: L.CRS.EPSG4326
         }
