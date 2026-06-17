@@ -53,6 +53,9 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         L.DomUtil.addClass(this.container, 'leaflet-control-timeserieswms-active');
         this.active = true;
 
+        // Add attribution to map
+        this._map.attributionControl.addAttribution(this.options.attribution);
+
         this._buildUI();
         this._initLayers();
 
@@ -331,6 +334,8 @@ L.Control.TimeSeriesWMS = L.Control.extend({
 
     unload: function () {
         this._stop();
+        // Remove attribution from map
+        this._map.attributionControl.removeAttribution(this.options.attribution);
         L.DomUtil.remove(this.controlContainer);
         L.DomUtil.remove(this.closeButton);
         L.DomUtil.removeClass(this.container, 'leaflet-control-timeserieswms-active');
