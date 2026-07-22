@@ -1,9 +1,9 @@
 /**
  * Leaflet.TimeSeriesWMS
- * A Leaflet control to animate time-series WMS layers (e.g., satellite imagery) 
+ * A Leaflet control to animate time-series WMS layers (e.g., satellite imagery)
  * by querying GetCapabilities to obtain available timestamps.
  * Based on Leaflet.Rainviewer by mwasil.
- * 
+ *
  * @author Pedro Venâncio
  * @license MIT
  */
@@ -16,6 +16,7 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         prevButtonText: '<',
         positionSliderLabelText: "Time (UTC):",
         opacitySliderLabelText: "Opacity:",
+        limitLabelText: "Limit (days):",            // NEW: label for the limit input
         animationInterval: 500,
         opacity: 0.8,
         // WMS configuration (multiple layers supported)
@@ -24,14 +25,19 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         wmsParams: [],        // Array of extra WMS parameters (version, format, crs, etc.)
         // Temporal configuration
         timeStepMinutes: 10,
-        maxHistoryHours: 12,
-        dataDelayMinutes: 60,        // Fallback delay if capabilities fail
+        maxHistoryHours: 12,       // USED ONLY AS FALLBACK (when GetCapabilities fails)
+        dataDelayMinutes: 60,
+        limitHistoryHours: undefined, // If defined (e.g., 24), use as initial limit (in HOURS); if undefined, start with 0 (no limit)
         attribution: '&copy; <a href="https://eumetsat.int" target="_blank">EUMETSAT</a> / <a href="https://lsa-saf.eumetsat.int" target="_blank">LSASAF</a>',
         buttonTitle: 'Show time-series WMS'
     },
 
     onAdd: function (map) {
         this.timestamps = [];
+        this.fullTimestamps = null;   // store unfiltered list from GetCapabilities
+        // If limitHistoryHours is explicitly defined (even 0), use it; otherwise default to 0 (no limit)
+        // Internally we keep hours, but the UI displays days
+        this.limitHours = (this.options.limitHistoryHours !== undefined) ? this.options.limitHistoryHours : 0;
         this.layers = [];
         this.currentIndex = 0;
         this.animationTimer = false;
@@ -63,6 +69,7 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         this._fetchTimestampsFromCapabilities()
             .then(commonTimestamps => {
                 if (commonTimestamps.length > 0) {
+                    this.fullTimestamps = commonTimestamps.slice(); // keep a copy
                     this.timestamps = commonTimestamps;
                 } else {
                     console.warn('No common timestamps found. Using fallback.');
@@ -124,6 +131,23 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         this.opacitySlider.value = this.options.opacity * 100;
         L.DomEvent.on(this.opacitySlider, 'input', this._setOpacity, this);
         L.DomEvent.disableClickPropagation(this.opacitySlider);
+
+        // ----- Limit control (in days, converted to hours internally) -----
+        this.limitSliderLabel = L.DomUtil.create('label', 'leaflet-control-timeserieswms-label leaflet-bar-part', this.controlContainer);
+        this.limitSliderLabel.htmlFor = "timeserieswms-limitslider";
+        this.limitSliderLabel.textContent = this.options.limitLabelText;   // customisable label
+
+        this.limitInput = L.DomUtil.create('input', 'leaflet-control-timeserieswms-limit leaflet-bar-part', this.controlContainer);
+        this.limitInput.type = "number";
+        this.limitInput.id = "timeserieswms-limitslider";
+        this.limitInput.min = 0;
+        this.limitInput.step = 1;
+        // Display initial value in days (divide hours by 24)
+        this.limitInput.value = (this.limitHours / 24) || 0;
+        this.limitInput.title = "0 = no limit (show all available frames)";
+        L.DomEvent.on(this.limitInput, 'change', this._onLimitChange, this);
+        L.DomEvent.disableClickPropagation(this.limitInput);
+        // ----- end limit -----
 
         this.closeButton = L.DomUtil.create('div', 'leaflet-control-timeserieswms-close', this.container);
         L.DomEvent.on(this.closeButton, 'click', this.unload, this);
@@ -237,18 +261,83 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         ref.setUTCSeconds(0);
         ref.setUTCMilliseconds(0);
 
+        // Use maxHistoryHours for the fallback period
         const numFrames = Math.ceil((this.options.maxHistoryHours * 60) / step);
         const timestamps = [];
         for (let i = numFrames - 1; i >= 0; i--) {
             timestamps.push(new Date(ref.getTime() - i * step * 60000));
         }
         this.timestamps = timestamps;
+        // fallback: no fullTimestamps, mark as null
+        this.fullTimestamps = null;
     },
 
     _finalizeLoad: function () {
-        this.positionSlider.max = this.timestamps.length - 1;
-        this.positionSlider.value = this.timestamps.length - 1;
-        this._showFrame(this.timestamps.length - 1);
+        if (this.fullTimestamps && this.fullTimestamps.length > 0) {
+            // Apply the initial limit (this.limitHours is in hours)
+            this._applyTimeLimit(this.limitHours);
+            // Update input display (in days)
+            this.limitInput.value = (this.limitHours / 24) || 0;
+        } else {
+            // Fallback: already have timestamps generated locally (respecting maxHistoryHours)
+            this.positionSlider.max = this.timestamps.length - 1;
+            this.positionSlider.value = this.timestamps.length - 1;
+            this._showFrame(this.timestamps.length - 1);
+            // Disable limit input because we don't have full data
+            if (this.limitInput) {
+                this.limitInput.disabled = true;
+                this.limitInput.style.opacity = 0.5;
+                this.limitInput.title = "Disabled because using fallback timestamps";
+            }
+        }
+    },
+
+    /**
+     * Apply a time limit to the full timestamps list.
+     * @param {number} limitHours - max hours to keep (0 = no limit)
+     */
+    _applyTimeLimit: function (limitHours) {
+        if (!this.fullTimestamps || this.fullTimestamps.length === 0) {
+            return;
+        }
+        limitHours = parseFloat(limitHours) || 0;
+        this.limitHours = limitHours;
+
+        // Update the input field to show the value in days
+        this.limitInput.value = (this.limitHours / 24) || 0;
+
+        if (limitHours > 0) {
+            const now = this.fullTimestamps[this.fullTimestamps.length - 1];
+            const cutoff = new Date(now.getTime() - limitHours * 3600000);
+            this.timestamps = this.fullTimestamps.filter(d => d >= cutoff);
+        } else {
+            this.timestamps = this.fullTimestamps.slice();
+        }
+
+        // Update slider and show last frame
+        if (this.timestamps.length > 0) {
+            this.positionSlider.max = this.timestamps.length - 1;
+            this.positionSlider.value = this.timestamps.length - 1;
+            this._showFrame(this.timestamps.length - 1);
+        } else {
+            // If filtering removed everything, revert to full list
+            console.warn('Limit removed all timestamps; reverting to full list.');
+            this.timestamps = this.fullTimestamps.slice();
+            this.positionSlider.max = this.timestamps.length - 1;
+            this.positionSlider.value = this.timestamps.length - 1;
+            this._showFrame(this.timestamps.length - 1);
+            // also reset input to 0 (no limit)
+            this.limitInput.value = 0;
+            this.limitHours = 0;
+        }
+    },
+
+    _onLimitChange: function (e) {
+        var val = parseFloat(this.limitInput.value) || 0;
+        // Convert days to hours
+        var limitHours = val * 24;
+        this._stop(); // stop animation
+        this._applyTimeLimit(limitHours);
     },
 
     _showFrame: function (index) {
