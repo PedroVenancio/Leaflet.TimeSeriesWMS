@@ -76,6 +76,7 @@ L.control.timeserieswms({
     maxHistoryHours: 12,          // fallback only
     limitHistoryHours: 24,        // initial limit in hours (optional)
     timeStepMinutes: 10,
+    timestampStrategy: 'union',
     opacity: 0.8,
     buttonTitle: 'Show satellite time series'
 }).addTo(map);
@@ -101,6 +102,7 @@ L.control.timeserieswms({
 | `maxHistoryHours` | number | `12` | **Fallback only**: number of hours to generate when `GetCapabilities` fails. |
 | `dataDelayMinutes` | number | `60` | Delay applied when generating fallback timestamps (minutes). |
 | `limitHistoryHours` | number | `undefined` | **Optional initial limit in hours**. If set to a positive number, the control will start with that limit applied. If `undefined` or `0`, no initial limit (shows all available data). |
+| `timestampStrategy` | string | `'union'` | Strategy to combine timestamps from multiple WMS: `'union'` (default) includes all timestamps from all services; `'intersection'` keeps only timestamps common to all services. Use `'union'` for maximum data availability, especially when some services may have gaps. |
 | `attribution` | string | `'&copy; EUMETSAT / LSASAF'` | Attribution text for the layers. |
 | `buttonTitle` | string | `'Show time-series WMS'` | Tooltip for the control button. |
 
@@ -121,7 +123,7 @@ If you want to start the control with a limit already applied, use the `limitHis
 
 1. When the button is clicked, the plugin sends a `GetCapabilities` request to each configured WMS.
 2. It parses the `<Dimension name="time">` element to extract the list of available timestamps for each service.
-3. It computes the **intersection** of timestamps across all layers (so that every layer has data for that time).
+3. It computes the **union** / **intersection** of timestamps across all layers (so that every layer has data for that time).
 4. The full list of timestamps is stored.
 5. The **limit** (if any) is applied: only timestamps within the last `limit` days are kept.
 6. A timeline slider is created with the resulting frames.
@@ -129,6 +131,8 @@ If you want to start the control with a limit already applied, use the `limitHis
 8. The user can navigate manually, use the play button, or adjust the history limit at any time.
 
 If the `GetCapabilities` requests fail (e.g., due to CORS or network errors), the plugin falls back to generating timestamps locally using `maxHistoryHours`, `timeStepMinutes`, and `dataDelayMinutes`. This ensures that the control remains functional even without server‑side time information.
+
+The plugin fetches the list of available timestamps from each WMS. By default, it uses a **union** of all timestamps, so that frames are available as long as at least one service has data. For each frame, only the services that actually have data for that timestamp are updated; others retain their last valid frame. If you prefer to show only frames where **all** services have data, set `timestampStrategy: 'intersection'`.
 
 ## Customization
 

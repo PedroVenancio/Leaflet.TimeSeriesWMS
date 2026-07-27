@@ -16,7 +16,7 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         prevButtonText: '<',
         positionSliderLabelText: "Time (UTC):",
         opacitySliderLabelText: "Opacity:",
-        limitLabelText: "Limit (days):",            // NEW: label for the limit input
+        limitLabelText: "Limit (days):",            // Label for the limit input
         animationInterval: 500,
         opacity: 0.8,
         // WMS configuration (multiple layers supported)
@@ -25,18 +25,18 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         wmsParams: [],        // Array of extra WMS parameters (version, format, crs, etc.)
         // Temporal configuration
         timeStepMinutes: 10,
-        maxHistoryHours: 12,       // USED ONLY AS FALLBACK (when GetCapabilities fails)
+        maxHistoryHours: 12,       // Fallback only (when GetCapabilities fails)
         dataDelayMinutes: 60,
         limitHistoryHours: undefined, // If defined (e.g., 24), use as initial limit (in HOURS); if undefined, start with 0 (no limit)
+        timestampStrategy: 'union',      // 'union' or 'intersection'
         attribution: '&copy; <a href="https://eumetsat.int" target="_blank">EUMETSAT</a> / <a href="https://lsa-saf.eumetsat.int" target="_blank">LSASAF</a>',
         buttonTitle: 'Show time-series WMS'
     },
 
     onAdd: function (map) {
         this.timestamps = [];
-        this.fullTimestamps = null;   // store unfiltered list from GetCapabilities
-        // If limitHistoryHours is explicitly defined (even 0), use it; otherwise default to 0 (no limit)
-        // Internally we keep hours, but the UI displays days
+        this.fullTimestamps = null;          // sorted union/intersection of all timestamps
+        this.layerTimestamps = null;         // array of arrays, one per layer
         this.limitHours = (this.options.limitHistoryHours !== undefined) ? this.options.limitHistoryHours : 0;
         this.layers = [];
         this.currentIndex = 0;
@@ -67,10 +67,11 @@ L.Control.TimeSeriesWMS = L.Control.extend({
 
         // Try to fetch real timestamps from GetCapabilities
         this._fetchTimestampsFromCapabilities()
-            .then(commonTimestamps => {
-                if (commonTimestamps.length > 0) {
-                    this.fullTimestamps = commonTimestamps.slice(); // keep a copy
-                    this.timestamps = commonTimestamps;
+            .then(result => {
+                if (result && result.commonTimestamps.length > 0) {
+                    this.fullTimestamps = result.commonTimestamps.slice();
+                    this.layerTimestamps = result.layerTimestamps.map(list => list.slice());
+                    this.timestamps = this.fullTimestamps;
                 } else {
                     console.warn('No common timestamps found. Using fallback.');
                     this._generateFallbackTimestamps();
@@ -132,10 +133,10 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         L.DomEvent.on(this.opacitySlider, 'input', this._setOpacity, this);
         L.DomEvent.disableClickPropagation(this.opacitySlider);
 
-        // ----- Limit control (in days, converted to hours internally) -----
+        // Limit control (in days, converted to hours internally)
         this.limitSliderLabel = L.DomUtil.create('label', 'leaflet-control-timeserieswms-label leaflet-bar-part', this.controlContainer);
         this.limitSliderLabel.htmlFor = "timeserieswms-limitslider";
-        this.limitSliderLabel.textContent = this.options.limitLabelText;   // customisable label
+        this.limitSliderLabel.textContent = this.options.limitLabelText;
 
         this.limitInput = L.DomUtil.create('input', 'leaflet-control-timeserieswms-limit leaflet-bar-part', this.controlContainer);
         this.limitInput.type = "number";
@@ -147,7 +148,6 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         this.limitInput.title = "0 = no limit (show all available frames)";
         L.DomEvent.on(this.limitInput, 'change', this._onLimitChange, this);
         L.DomEvent.disableClickPropagation(this.limitInput);
-        // ----- end limit -----
 
         this.closeButton = L.DomUtil.create('div', 'leaflet-control-timeserieswms-close', this.container);
         L.DomEvent.on(this.closeButton, 'click', this.unload, this);
@@ -219,8 +219,8 @@ L.Control.TimeSeriesWMS = L.Control.extend({
     },
 
     /**
-     * Fetch time dimensions from all configured WMS and return the intersection.
-     * @returns {Promise<Date[]>} common timestamps
+     * Fetch time dimensions from all WMS and return the union (or intersection) of timestamps.
+     * @returns {Promise<Object>} { commonTimestamps: Date[], layerTimestamps: Date[][] }
      */
     _fetchTimestampsFromCapabilities: function () {
         const urls = this.options.wmsUrls;
@@ -232,17 +232,35 @@ L.Control.TimeSeriesWMS = L.Control.extend({
 
         return Promise.all(promises)
             .then(results => {
-                if (results.length === 0) return [];
-                const sets = results.map(list => new Set(list.map(d => d.getTime())));
-                const firstSet = sets[0];
-                const common = [];
-                for (let timeMs of firstSet) {
-                    if (sets.every(set => set.has(timeMs))) {
-                        common.push(new Date(timeMs));
+                if (results.length === 0) return { commonTimestamps: [], layerTimestamps: [] };
+
+                const strategy = this.options.timestampStrategy || 'union';
+                let commonTimestamps;
+
+                if (strategy === 'intersection') {
+                    // Intersection of all sets
+                    const sets = results.map(list => new Set(list.map(d => d.getTime())));
+                    const firstSet = sets[0];
+                    const common = [];
+                    for (let timeMs of firstSet) {
+                        if (sets.every(set => set.has(timeMs))) {
+                            common.push(new Date(timeMs));
+                        }
                     }
+                    commonTimestamps = common;
+                } else {
+                    // Union: merge all timestamps, sort, and remove duplicates
+                    const all = results.reduce((acc, list) => acc.concat(list), []);
+                    const unique = new Set(all.map(d => d.getTime()));
+                    commonTimestamps = Array.from(unique).map(ms => new Date(ms));
                 }
-                common.sort((a, b) => a - b);
-                return common;
+
+                commonTimestamps.sort((a, b) => a - b);
+
+                return {
+                    commonTimestamps: commonTimestamps,
+                    layerTimestamps: results   // each is Date[]
+                };
             });
     },
 
@@ -268,8 +286,8 @@ L.Control.TimeSeriesWMS = L.Control.extend({
             timestamps.push(new Date(ref.getTime() - i * step * 60000));
         }
         this.timestamps = timestamps;
-        // fallback: no fullTimestamps, mark as null
         this.fullTimestamps = null;
+        this.layerTimestamps = null;
     },
 
     _finalizeLoad: function () {
@@ -306,12 +324,21 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         // Update the input field to show the value in days
         this.limitInput.value = (this.limitHours / 24) || 0;
 
+        let filteredCommon;
         if (limitHours > 0) {
             const now = this.fullTimestamps[this.fullTimestamps.length - 1];
             const cutoff = new Date(now.getTime() - limitHours * 3600000);
-            this.timestamps = this.fullTimestamps.filter(d => d >= cutoff);
+            filteredCommon = this.fullTimestamps.filter(d => d >= cutoff);
         } else {
-            this.timestamps = this.fullTimestamps.slice();
+            filteredCommon = this.fullTimestamps.slice();
+        }
+
+        this.timestamps = filteredCommon;
+
+        // Also filter each layer's timestamps for consistency (optional)
+        if (this.layerTimestamps) {
+            // We keep the full layer timestamps; in _showFrame we check existence.
+            // No need to filter them, just keep the original lists.
         }
 
         // Update slider and show last frame
@@ -345,15 +372,39 @@ L.Control.TimeSeriesWMS = L.Control.extend({
         const time = this.timestamps[index];
         const timeStr = time.toISOString();
 
+        // For each layer, check if this timestamp exists in its individual list
         for (let i = 0; i < this.layers.length; i++) {
             const layer = this.layers[i];
-            if (layer) {
+            if (!layer) continue;
+
+            let hasData = true;
+            if (this.layerTimestamps && this.layerTimestamps[i]) {
+                const layerTimes = this.layerTimestamps[i];
+                // Check if any timestamp in the layer's list matches the current time (millisecond precision)
+                const timeMs = time.getTime();
+                // Since the list is sorted, we can binary search or just use a Set for O(1)
+                // We'll create a Set on first use or cache it.
+                if (!this._layerTimeSets) {
+                    this._layerTimeSets = this.layerTimestamps.map(list => new Set(list.map(d => d.getTime())));
+                }
+                hasData = this._layerTimeSets[i].has(timeMs);
+            }
+
+            if (hasData) {
                 layer.setParams({ time: timeStr });
                 layer.setOpacity(this.options.opacity);
                 if (!this._map.hasLayer(layer)) {
                     this._map.addLayer(layer);
                 }
                 layer.bringToFront();
+            } else {
+                // No data for this timestamp: optionally remove or keep last frame.
+                // We'll keep the layer as is (it will show the last valid time).
+                // To remove it, we could do: 
+                // if (this._map.hasLayer(layer)) {
+                //     this._map.removeLayer(layer);
+                // }
+                // But that would cause flickering. Better to leave it with the previous time.
             }
         }
 
@@ -436,6 +487,7 @@ L.Control.TimeSeriesWMS = L.Control.extend({
             }
         });
         this.layers = [];
+        this._layerTimeSets = null;
     }
 });
 
